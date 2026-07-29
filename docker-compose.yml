@@ -1,0 +1,107 @@
+services:
+  api:
+    build:
+      context: ./app
+      dockerfile: backend/Dockerfile
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:8443}
+      DATABASE_URLS: ${DATABASE_URLS:-postgresql+psycopg://url:url@postgres-shard-0-primary:5432/url_shortener,postgresql+psycopg://url:url@postgres-shard-1-primary:5432/url_shortener}
+      DATABASE_REPLICA_URLS: ${DATABASE_REPLICA_URLS:-postgresql+psycopg://url:url@postgres-shard-0-primary:5432/url_shortener,postgresql+psycopg://url:url@postgres-shard-1-primary:5432/url_shortener}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SESSION_SECRET: ${SESSION_SECRET:-hquwif&*@415919SFAJF0301JZVZCsdc}
+      POOL_MIN_AVAILABLE_CODES: ${POOL_MIN_AVAILABLE_CODES:-1000000}
+      POOL_LOW_WATERMARK_CODES: ${POOL_LOW_WATERMARK_CODES:-500000}
+      POOL_SEED_BATCH_SIZE: ${POOL_SEED_BATCH_SIZE:-50000}
+      RUN_ANALYTICS_WORKER_IN_API: "false"
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-373360265310-sptg58sk0orlq9spfdbdsh8gaa1hcugp.apps.googleusercontent.com}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-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}
+      YANDEX_OAUTH_CLIENT_ID: ${YANDEX_OAUTH_CLIENT_ID:-d58c0efdf1434863add847753abff677}
+      YANDEX_OAUTH_CLIENT_SECRET: ${YANDEX_OAUTH_CLIENT_SECRET:-648cc2664af54f9bbccc13866a5da165}
+      VK_OAUTH_CLIENT_ID: ${VK_OAUTH_CLIENT_ID:-}
+      VK_OAUTH_CLIENT_SECRET: ${VK_OAUTH_CLIENT_SECRET:-}
+      VK_OAUTH_AUTHORIZE_URL: ${VK_OAUTH_AUTHORIZE_URL:-}
+      VK_OAUTH_TOKEN_URL: ${VK_OAUTH_TOKEN_URL:-}
+      VK_OAUTH_USERINFO_URL: ${VK_OAUTH_USERINFO_URL:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres-shard-0-primary:
+        condition: service_healthy
+      postgres-shard-1-primary:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  https-gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "8443:443"
+    volumes:
+      - ./infra/nginx/localhost-https.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./local-certs:/etc/nginx/certs:ro
+
+  analytics-worker:
+    build:
+      context: ./app
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "url_shortener.workers.analytics_worker"]
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:8443}
+      DATABASE_URLS: ${DATABASE_URLS:-postgresql+psycopg://url:url@postgres-shard-0-primary:5432/url_shortener,postgresql+psycopg://url:url@postgres-shard-1-primary:5432/url_shortener}
+      DATABASE_REPLICA_URLS: ${DATABASE_REPLICA_URLS:-postgresql+psycopg://url:url@postgres-shard-0-primary:5432/url_shortener,postgresql+psycopg://url:url@postgres-shard-1-primary:5432/url_shortener}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
+      ANALYTICS_QUEUE_NAME: ${ANALYTICS_QUEUE_NAME:-analytics:redirect-events}
+      RUN_ANALYTICS_WORKER_IN_API: "true"
+    depends_on:
+      postgres-shard-0-primary:
+        condition: service_healthy
+      postgres-shard-1-primary:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres-shard-0-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: url
+      POSTGRES_PASSWORD: url
+      POSTGRES_DB: url_shortener
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-shard-0-primary:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U url -d url_shortener"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-shard-1-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: url
+      POSTGRES_PASSWORD: url
+      POSTGRES_DB: url_shortener
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg-shard-1-primary:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U url -d url_shortener"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "10gb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+
+volumes:
+  pg-shard-0-primary:
+  pg-shard-1-primary:

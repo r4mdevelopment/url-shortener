@@ -1,0 +1,137 @@
+@startuml
+title Низкоуровневый дизайн (Component Level) - URL Shortener
+
+top to bottom direction
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultTextAlignment center
+skinparam packageStyle rectangle
+skinparam ArrowThickness 1
+skinparam package {
+  BorderColor #666666
+  BackgroundColor #F3F3F3
+}
+skinparam rectangle {
+  RoundCorner 8
+  BorderColor #444444
+  BackgroundColor #FFFFFF
+}
+skinparam database {
+  BorderColor #444444
+  BackgroundColor #FFF9E8
+}
+skinparam queue {
+  BorderColor #444444
+  BackgroundColor #EEF7FF
+}
+
+actor "Пользователь" as user
+actor "Администратор" as admin
+actor "API-клиент (интегратор)" as apiClient
+rectangle "Браузер пользователя" as browser #F8FBFF
+
+package "Внешние системы" as external {
+  rectangle "OAuth-провайдеры\nVK / Яндекс / Google" as oauth
+  rectangle "Внешние сайты\n(original URL)" as externalWeb
+}
+
+package "URL Shortener Platform" as platform #ECECEC {
+  package "Пограничный слой" as edgeLayer {
+    rectangle "Edge LB / Reverse Proxy\nтерминация TLS" as edgeLb
+    rectangle "API Gateway\nмаршрутизация, auth-проверки,\nhooks для rate-limit" as apiGateway
+  }
+
+  package "Прикладной слой" as appLayer {
+    rectangle "Сервис Auth/OAuth\nOIDC-вход, привязка аккаунтов" as authSvc
+    rectangle "Сервис управления ссылками\nсоздание/изменение/деактивация\nTTL, правила alias" as linkSvc
+    rectangle "Сервис резолвинга редиректа\nразрешение short_code\nформирование HTTP 302" as redirectSvc
+    rectangle "Сервис anti-abuse\nrate limit + проверки deny-list" as antiAbuse
+    rectangle "Генератор пула short-code\nпредгенерация Base62(<=8)" as poolGen
+    rectangle "Сервис API аналитики\nэндпоинты чтения аналитики" as analyticsApi
+    rectangle "Воркер-агрегатор аналитики\nчтение событий, daily-агрегации" as analyticsWorker
+  }
+
+  package "Асинхронный / middleware слой" as middlewareLayer {
+    queue "Кластер Kafka\nсобытия редиректов и кликов" as kafka
+  }
+
+  package "Слой данных" as dataLayer {
+    database "Redis\ncache + состояние rate-limit" as redis
+    database "Sharded PostgreSQL Primary\n(shard-0..N)" as pgPrimary
+    database "Sharded PostgreSQL Replica\n(replica per shard)" as pgReplica
+  }
+}
+
+' Выравнивание
+edgeLb -[hidden]down-> apiGateway
+authSvc -[hidden]right-> linkSvc
+linkSvc -[hidden]right-> redirectSvc
+redirectSvc -[hidden]right-> antiAbuse
+antiAbuse -[hidden]down-> poolGen
+poolGen -[hidden]right-> analyticsApi
+analyticsApi -[hidden]right-> analyticsWorker
+redis -[hidden]right-> pgPrimary
+pgPrimary -[hidden]right-> pgReplica
+
+' Внешний входящий трафик
+user --> browser : HTTPS :443
+browser --> edgeLb : HTTPS :443
+apiClient --> edgeLb : HTTPS :443
+admin --> edgeLb : HTTPS :443
+edgeLb --> apiGateway : HTTP/1.1 :8080
+
+' Маршрутизация в Gateway
+apiGateway --> authSvc : HTTP/1.1 :8081\n/oauth/*
+apiGateway --> linkSvc : HTTP/1.1 :8082\n/api/v1/links/*
+apiGateway --> redirectSvc : HTTP/1.1 :8083\nGET /{short_code}
+apiGateway --> antiAbuse : gRPC :9090\nпредпроверка
+apiGateway --> analyticsApi : HTTP/1.1 :8084\n/api/v1/analytics/*
+
+' Auth/OAuth
+authSvc --> oauth : HTTPS :443\nOAuth2/OIDC
+authSvc --> pgPrimary : PostgreSQL :5432
+authSvc --> redis : RESP/TCP :6379\nкэш сессий
+
+' Управление ссылками
+linkSvc --> antiAbuse : gRPC :9090\nabuse-проверка
+linkSvc --> pgPrimary : PostgreSQL :5432\nCRUD links
+linkSvc --> redis : RESP/TCP :6379\nwrite-through кэша
+linkSvc --> poolGen : gRPC :9091\nрезерв pre-generated code
+
+' Поток редиректа
+redirectSvc --> antiAbuse : gRPC :9090\nruntime-проверка
+redirectSvc --> redis : RESP/TCP :6379\nбыстрый lookup
+redirectSvc --> pgReplica : PostgreSQL :5432\nfallback lookup
+redirectSvc --> apiGateway : HTTP/1.1 :8080\npayload 302
+apiGateway --> browser : HTTPS :443\nHTTP 302 Redirect
+browser --> externalWeb : HTTPS :443
+
+' Anti-abuse и deny-list
+antiAbuse --> redis : RESP/TCP :6379\nсчетчики sliding window
+antiAbuse --> pgPrimary : PostgreSQL :5432\nправила deny-list
+
+' Генерация пула кодов
+poolGen --> pgPrimary : PostgreSQL :5432\nзаполнение DAT_SHORT_CODE_REGISTRY
+
+' Асинхронный контур аналитики
+redirectSvc ..> kafka : Kafka protocol :9092\nпубликация redirect events
+kafka ..> analyticsWorker : Kafka protocol :9092\nчтение redirect events
+analyticsWorker --> pgPrimary : PostgreSQL :5432\nобновление DAT_LINK_STATS_DAILY
+analyticsApi --> pgReplica : PostgreSQL :5432\nчтение аналитических представлений
+
+' Репликация
+pgPrimary --> pgReplica : PostgreSQL streaming replication per shard :5432
+
+legend right
+  == Легенда ==
+  Граница платформы: URL Shortener Platform
+  Белые блоки: компоненты (сервисы/воркеры)
+  Голубой блок: middleware (Kafka)
+  Желтые блоки: хранилища данных
+  --
+  Сплошная стрелка: синхронный вызов
+  Пунктирная стрелка: асинхронный поток событий
+  Подпись стрелки: протокол + порт
+endlegend
+
+@enduml

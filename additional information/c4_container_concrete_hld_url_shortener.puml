@@ -1,0 +1,127 @@
+@startuml
+title Детализированный высокоуровневый дизайн (Container Level) - URL Shortener
+
+top to bottom direction
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultTextAlignment center
+skinparam PackageStyle rectangle
+skinparam ArrowThickness 1
+skinparam package {
+  BorderColor #666666
+  BackgroundColor #F3F3F3
+}
+skinparam rectangle {
+  RoundCorner 8
+  BorderColor #444444
+  BackgroundColor #FFFFFF
+}
+skinparam database {
+  BorderColor #444444
+  BackgroundColor #FFF9E8
+}
+skinparam queue {
+  BorderColor #444444
+  BackgroundColor #EEF7FF
+}
+
+actor "Пользователь" as user
+actor "Администратор" as admin
+actor "API-клиент (интегратор)" as apiClient
+rectangle "Браузер пользователя" as browser #F8FBFF
+
+package "Внешние системы" as external {
+  rectangle "OAuth-провайдеры\n(VK / Яндекс / Google)" as oauth
+  rectangle "Внешние веб-ресурсы\n(original URL)" as externalWeb
+}
+
+package "Платформа URL Shortener" as platform #ECECEC {
+  package "Клиентский слой" as clientLayer {
+    rectangle "Веб-клиент / Личный кабинет\n(опционально для MVP)" as webClient
+  }
+
+  package "Слой API и маршрутизации" as edgeLayer {
+    rectangle "API Gateway\n- HTTPS-вход\n- маршрутизация\n- проверка API key / JWT\n- проксирование запросов" as apiGateway
+  }
+
+  package "Прикладной слой" as appLayer {
+    together {
+      rectangle "Сервис управления ссылками\n- создание short URL\n- alias\n- TTL\n- CRUD ссылок" as linkMgmt
+      rectangle "Сервис редиректа и разрешения\n- разрешение short_code\n- быстрый редирект\n- ответ 302" as redirectSvc
+      rectangle "Контейнер anti-abuse\n- ограничение частоты\n- проверки deny-list" as antiAbuse
+    }
+
+    together {
+      rectangle "Генератор пула short-code\n- предгенерация <= 8 символов\n- заполнение реестра кодов\n- контроль минимального запаса" as poolGen
+      rectangle "Контейнер OAuth-интеграции\n- OAuth2/OIDC flow\n- привязка аккаунтов" as oauthAdapter
+      rectangle "Сервис аналитики\n- analytics / reporting" as analytics
+    }
+  }
+
+  package "Слой данных" as dataLayer {
+    together {
+      database "Redis\ncache + rate-limit state" as redis
+      database "Sharded PostgreSQL\nusers, user_oauth_accounts,\nshort_links, short_code_registry,\nlink_stats_daily, deny_list" as pg
+    }
+  }
+
+  package "Асинхронный слой" as asyncLayer {
+    queue "Шина событий\n(Kafka / RabbitMQ / NATS)\nсобытия редиректов и кликов" as eventBus
+  }
+}
+
+' выравнивание
+linkMgmt -[hidden]down-> poolGen
+redirectSvc -[hidden]down-> oauthAdapter
+antiAbuse -[hidden]down-> analytics
+redis -[hidden]right-> pg
+
+' Внешние взаимодействия
+user --> browser : Открытие short URL
+browser --> apiGateway : GET /{short_code}\nHTTPS
+apiClient --> apiGateway : Создание short URL через API\nHTTPS + API key
+admin --> webClient : Админ-действия\nHTTPS
+webClient --> apiGateway : HTTPS API вызовы
+
+' Маршрутизация и проверки
+apiGateway --> antiAbuse : Предварительные проверки
+apiGateway --> linkMgmt : API создания/изменения
+apiGateway --> redirectSvc : Endpoint редиректа
+linkMgmt --> oauthAdapter : Вход/связывание аккаунта
+oauthAdapter --> oauth : OAuth2/OIDC
+
+' Поток создания ссылок
+linkMgmt --> poolGen : Резервирование кода из пула
+poolGen --> pg : Заполнение реестра кодов
+linkMgmt --> pg : CRUD links
+linkMgmt --> redis : Чтение/запись кэша
+
+' Поток редиректа
+redirectSvc --> redis : Быстрый поиск (Redis)
+redirectSvc --> pg : Поиск при cache miss (PostgreSQL)
+redirectSvc --> apiGateway : HTTP 302 Redirect
+apiGateway --> browser : HTTP 302 Redirect Response
+browser --> externalWeb : Переход на original URL
+
+' Anti-abuse
+antiAbuse --> redis : Счётчики rate-limit /\nвременное состояние
+antiAbuse --> pg : Чтение/обновление deny-list
+
+' Асинхронная аналитика
+redirectSvc ..> eventBus : Публикация событий переходов
+eventBus ..> analytics : Обработка событий переходов
+analytics --> pg : Обновление link_stats_daily
+
+legend right
+  == Легенда ==
+  Граница платформы: Платформа URL Shortener
+  Серые блоки: слои контейнеров
+  Белые блоки: сервисы/контейнеры
+  Желтые блоки: хранилища данных
+  Голубой блок: шина событий
+  --
+  Сплошная стрелка: синхронный вызов
+  Пунктирная стрелка: асинхронная публикация/обработка
+endlegend
+
+@enduml

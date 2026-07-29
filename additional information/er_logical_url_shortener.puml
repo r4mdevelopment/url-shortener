@@ -1,0 +1,137 @@
+@startuml
+title Логическая ER-диаграмма - URL Shortener
+
+hide circle
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+package "Пользователи и доступ" {
+  entity DAT_USERS {
+    * id : uuid
+    --
+    email : string
+    display_name : string
+    status : enum(active, blocked, deleted)
+    created_at : datetime
+    updated_at : datetime
+  }
+
+  entity DAT_USER_OAUTH_ACCOUNTS {
+    * id : uuid
+    --
+    user_id : uuid
+    provider : enum(vk, yandex, google)
+    provider_user_id : string
+    linked_at : datetime
+    last_login_at : datetime
+  }
+
+  entity DAT_API_CLIENTS {
+    * id : uuid
+    --
+    client_name : string
+    api_key_hash : string
+    is_active : boolean
+    created_at : datetime
+    last_used_at : datetime
+  }
+}
+
+package "Ссылки" {
+  entity DAT_SHORT_CODE_REGISTRY {
+    * short_code : string(8)
+    --
+    is_custom_alias : boolean
+    is_reserved : boolean
+    is_used : boolean
+    reserved_at : datetime
+    used_at : datetime
+    created_at : datetime
+  }
+
+  entity DAT_SHORT_LINKS {
+    * id : uuid
+    --
+    owner_user_id : uuid?
+    api_client_id : uuid?
+    short_code : string(8)
+    custom_alias : string(8)?
+    original_url : string
+    expires_at : datetime?
+    is_active : boolean
+    created_at : datetime
+    updated_at : datetime
+    deactivated_at : datetime?
+  }
+
+  entity DAT_DENY_LIST {
+    * id : uuid
+    --
+    target_type : enum(domain, url, hash)
+    rule_value : string
+    reason : string
+    created_by : string
+    created_at : datetime
+    is_active : boolean
+  }
+}
+
+package "Аналитика" {
+  entity DAT_LINK_REDIRECT_EVENTS {
+    * id : uuid
+    --
+    link_id : uuid
+    occurred_at : datetime
+    status_code : int
+    referer_domain : string?
+    user_agent_hash : string?
+    ip_hash : string?
+    country_code : string(2)?
+  }
+
+  entity DAT_LINK_STATS_DAILY {
+    * link_id : uuid
+    * stat_date : date
+    --
+    click_count : long
+    unique_visitors : long
+    last_click_at : datetime?
+    updated_at : datetime
+  }
+}
+
+package "Защита от злоупотреблений" {
+  entity DAT_RATE_LIMIT_STATE {
+    * id : uuid
+    --
+    subject_type : enum(ip, api_client, user)
+    subject_key : string
+    window_started_at : datetime
+    request_count : int
+    blocked_until : datetime?
+    updated_at : datetime
+  }
+}
+
+DAT_USERS ||--o{ DAT_USER_OAUTH_ACCOUNTS : has
+DAT_USERS ||--o{ DAT_SHORT_LINKS : owns
+DAT_API_CLIENTS ||--o{ DAT_SHORT_LINKS : creates via API
+DAT_SHORT_CODE_REGISTRY ||--o| DAT_SHORT_LINKS : allocates short_code
+DAT_SHORT_LINKS ||--o{ DAT_LINK_REDIRECT_EVENTS : emits
+DAT_SHORT_LINKS ||--o{ DAT_LINK_STATS_DAILY : aggregates
+DAT_DENY_LIST ..> DAT_SHORT_LINKS : validates original_url
+DAT_RATE_LIMIT_STATE ..> DAT_API_CLIENTS : protects API
+DAT_RATE_LIMIT_STATE ..> DAT_USERS : protects user actions
+
+note right of DAT_SHORT_CODE_REGISTRY
+  Пул pre-generated short_code
+  Base62, длина до 8 символов
+end note
+
+note right of DAT_LINK_REDIRECT_EVENTS
+  Сырые события переходов
+  источник для daily-агрегаций
+end note
+
+@enduml
+

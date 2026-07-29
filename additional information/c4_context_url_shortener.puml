@@ -1,0 +1,30 @@
+﻿@startuml
+title C4 Контекст - Сервис сокращения ссылок
+
+skinparam rectangle {
+  RoundCorner 10
+}
+skinparam defaultTextAlignment center
+skinparam shadowing false
+
+actor "Пользователь" as endUser
+actor "Администратор" as admin
+actor "API-клиент (интегратор)" as integrator
+rectangle "Браузер пользователя" as userBrowser
+
+rectangle "Платформа URL Shortener" as boundary {
+  rectangle "Сервис сокращения ссылок\n---\nСоздание коротких ссылок\nРедирект\nTTL\nБазовая статистика\nПроверка deny-list\nRate limiting" as urlShortener
+}
+
+rectangle "Внешние веб-ресурсы\n(исходные URL)" as targetWeb
+rectangle "OAuth-провайдеры\n(VK / Яндекс / Google)" as oauthProviders
+
+endUser --> userBrowser : Открывает short URL
+userBrowser --> urlShortener : Запрос short URL\nHTTPS
+urlShortener --> userBrowser : HTTP 302 Redirect Response
+userBrowser --> targetWeb : Переход на original URL
+integrator --> urlShortener : Создание коротких ссылок\nHTTPS + API key
+admin --> urlShortener : Управление deny-list\nи anti-abuse\nHTTPS
+urlShortener --> oauthProviders : OAuth2/OIDC аутентификация
+
+@enduml

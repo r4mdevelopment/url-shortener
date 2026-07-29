@@ -1,0 +1,110 @@
+﻿@startuml
+title Концептуальная ER-диаграмма - Сервис сокращения ссылок
+
+hide circle
+skinparam linetype ortho
+
+package "Домен пользователей и доступа" {
+  entity DAT_USERS {
+    * id: uuid
+    --
+    email: varchar(255)
+    display_name: varchar(255)
+    created_at: timestamp
+    status: varchar
+  }
+
+  entity DAT_USER_OAUTH_ACCOUNTS {
+    * id: uuid
+    --
+    FK user_id: uuid
+    provider: varchar(32)
+    provider_user_id: varchar(128)
+    created_at: timestamp
+    unique(provider, provider_user_id)
+  }
+
+  entity DAT_API_CLIENTS {
+    * id: uuid
+    --
+    client_name: varchar(255)
+    api_key_hash: varchar(255)
+    is_active: boolean
+    created_at: timestamp
+  }
+}
+
+package "Домен ссылок" {
+  entity DAT_SHORT_LINKS {
+    * id: uuid
+    --
+    FK owner_user_id: uuid
+    FK api_client_id: uuid
+    original_url: text
+    short_code: varchar(8)
+    custom_alias: varchar(8)
+    expires_at: timestamp
+    is_active: boolean
+    created_at: timestamp
+    deactivated_at: timestamp
+    index(short_code)
+    unique(short_code)
+    unique(custom_alias)  ' custom_alias может быть NULL
+  }
+
+  entity DAT_SHORT_CODE_REGISTRY {
+    * short_code: varchar(8)
+    --
+    PK(short_code)
+    is_custom_alias: boolean
+    is_reserved: boolean
+    is_used: boolean
+    reserved_at: timestamp
+    created_at: timestamp
+  }
+
+  entity DAT_DENY_LIST {
+    * id: uuid
+    --
+    target_type: varchar(16) ' domain/url/hash
+    rule_value: text
+    reason: varchar(255)
+    created_at: timestamp
+    is_active: boolean
+  }
+}
+
+package "Домен аналитики" {
+  entity DAT_LINK_STATS_DAILY {
+    * PK(link_id, stat_date)
+    --
+    FK link_id: uuid
+    stat_date: date
+    click_count: bigint
+    last_click_at: timestamp
+  }
+}
+
+package "Домен защиты от злоупотреблений" {
+  entity DAT_RATE_LIMIT_STATE {
+    * id: uuid
+    --
+    ' В прототипе это состояние хранится в PostgreSQL,
+    ' в production обычно используется Redis
+    subject_type: varchar(16) ' ip/api_client
+    subject_key: varchar(255)
+    window_started_at: timestamp
+    request_count: int
+    blocked_until: timestamp
+  }
+}
+
+DAT_USERS ||--o{ DAT_SHORT_LINKS
+DAT_USERS ||--o{ DAT_USER_OAUTH_ACCOUNTS
+DAT_API_CLIENTS ||--o{ DAT_SHORT_LINKS
+DAT_SHORT_LINKS ||--o{ DAT_LINK_STATS_DAILY
+DAT_SHORT_CODE_REGISTRY ||--|| DAT_SHORT_LINKS : "short_code"
+DAT_DENY_LIST ..> DAT_SHORT_LINKS : "original_url validation"
+DAT_RATE_LIMIT_STATE ..> DAT_API_CLIENTS : "api abuse control"
+
+@enduml
