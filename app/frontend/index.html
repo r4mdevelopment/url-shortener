@@ -1208,9 +1208,14 @@
       accountAvatar.textContent = getInitials(user.display_name);
     }
 
+    function updateCabinetSummary(count) {
+      cabinetSummary.textContent = `${count} ссылок`;
+    }
+
     function renderCabinetLinks(links) {
       cabinetLinks.innerHTML = '';
       if (!links.length) {
+        updateCabinetSummary(0);
         cabinetLinks.innerHTML = `
           <article class="cabinet-link">
             <div class="cabinet-link-main">
@@ -1223,6 +1228,8 @@
         `;
         return;
       }
+
+      updateCabinetSummary(links.length);
 
       links.forEach((item) => {
         const article = document.createElement('article');
@@ -1239,13 +1246,28 @@
           </div>
           <button class="inline-btn danger" type="button">Деактивировать</button>
         `;
-        article.querySelector('button').addEventListener('click', async () => {
+        article.querySelector('button').addEventListener('click', async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
           try {
-            await fetch(`/api/v1/links/${item.short_code}`, { method: 'DELETE', credentials: 'same-origin' });
+            const response = await fetch(`/api/v1/links/${item.short_code}`, { method: 'DELETE', credentials: 'same-origin' });
+            if (!response.ok) {
+              throw new Error('Не удалось деактивировать ссылку.');
+            }
+            article.remove();
+            const visibleLinks = cabinetLinks.querySelectorAll('.cabinet-link').length;
+            if (visibleLinks === 0) {
+              renderCabinetLinks([]);
+            } else {
+              updateCabinetSummary(visibleLinks);
+            }
+            if (currentShortCode === item.short_code) {
+              currentShortCode = null;
+            }
             statusText.textContent = 'Ссылка деактивирована.';
-            await loadCabinet();
           } catch (error) {
-            statusText.textContent = 'Не удалось деактивировать ссылку.';
+            button.disabled = false;
+            statusText.textContent = error.message || 'Не удалось деактивировать ссылку.';
           }
         });
         cabinetLinks.appendChild(article);
@@ -1259,7 +1281,6 @@
       }
       cabinet.hidden = false;
       const links = await api('/api/v1/links');
-      cabinetSummary.textContent = `${links.length} ссылок`;
       renderCabinetLinks(links);
     }
 

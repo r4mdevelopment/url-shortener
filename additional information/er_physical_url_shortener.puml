@@ -1,0 +1,147 @@
+@startuml
+title Физическая ER-диаграмма (PostgreSQL) - URL Shortener
+
+hide circle
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+package "schema: public" {
+  entity DAT_USERS {
+    * id : uuid <<PK>>
+    --
+    email : varchar(255) <<UQ, NOT NULL>>
+    display_name : varchar(255) <<NOT NULL>>
+    status : varchar(16) <<NOT NULL>>
+    created_at : timestamptz <<NOT NULL>>
+    updated_at : timestamptz <<NOT NULL>>
+  }
+
+  entity DAT_USER_OAUTH_ACCOUNTS {
+    * id : uuid <<PK>>
+    --
+    user_id : uuid <<FK DAT_USERS.id, NOT NULL>>
+    provider : varchar(32) <<NOT NULL>>
+    provider_user_id : varchar(128) <<NOT NULL>>
+    linked_at : timestamptz <<NOT NULL>>
+    last_login_at : timestamptz
+    unique(provider, provider_user_id)
+    index(user_id)
+  }
+
+  entity DAT_API_CLIENTS {
+    * id : uuid <<PK>>
+    --
+    client_name : varchar(255) <<NOT NULL>>
+    api_key_hash : varchar(255) <<NOT NULL>>
+    is_active : boolean <<NOT NULL>>
+    created_at : timestamptz <<NOT NULL>>
+    last_used_at : timestamptz
+    unique(api_key_hash)
+  }
+
+  entity DAT_SHORT_CODE_REGISTRY {
+    * short_code : varchar(8) <<PK>>
+    --
+    is_custom_alias : boolean <<NOT NULL DEFAULT false>>
+    is_reserved : boolean <<NOT NULL DEFAULT false>>
+    is_used : boolean <<NOT NULL DEFAULT false>>
+    reserved_at : timestamptz
+    used_at : timestamptz
+    created_at : timestamptz <<NOT NULL>>
+    check(length(short_code) between 1 and 8)
+    check(short_code ~ '^[A-Za-z0-9]+$')
+    index(is_reserved, is_used)
+  }
+
+  entity DAT_SHORT_LINKS {
+    * id : uuid <<PK>>
+    --
+    owner_user_id : uuid <<FK DAT_USERS.id>>
+    api_client_id : uuid <<FK DAT_API_CLIENTS.id>>
+    short_code : varchar(8) <<FK DAT_SHORT_CODE_REGISTRY.short_code, NOT NULL>>
+    custom_alias : varchar(8)
+    original_url : text <<NOT NULL>>
+    expires_at : timestamptz
+    is_active : boolean <<NOT NULL DEFAULT true>>
+    created_at : timestamptz <<NOT NULL>>
+    updated_at : timestamptz <<NOT NULL>>
+    deactivated_at : timestamptz
+    unique(short_code)
+    unique(custom_alias) where custom_alias is not null
+    index(short_code)
+    index(owner_user_id, created_at)
+    index(api_client_id, created_at)
+  }
+
+  entity DAT_DENY_LIST {
+    * id : uuid <<PK>>
+    --
+    target_type : varchar(16) <<NOT NULL>>
+    rule_value : text <<NOT NULL>>
+    reason : varchar(255)
+    created_by : varchar(128) <<NOT NULL>>
+    created_at : timestamptz <<NOT NULL>>
+    is_active : boolean <<NOT NULL DEFAULT true>>
+    index(target_type, is_active)
+  }
+
+  entity DAT_RATE_LIMIT_STATE {
+    * id : uuid <<PK>>
+    --
+    subject_type : varchar(16) <<NOT NULL>>
+    subject_key : varchar(255) <<NOT NULL>>
+    window_started_at : timestamptz <<NOT NULL>>
+    request_count : int <<NOT NULL>>
+    blocked_until : timestamptz
+    updated_at : timestamptz <<NOT NULL>>
+    unique(subject_type, subject_key, window_started_at)
+    index(blocked_until)
+  }
+
+  entity DAT_LINK_REDIRECT_EVENTS {
+    * id : uuid <<PK>>
+    --
+    link_id : uuid <<FK DAT_SHORT_LINKS.id, NOT NULL>>
+    occurred_at : timestamptz <<NOT NULL>>
+    status_code : smallint <<NOT NULL>>
+    referer_domain : varchar(255)
+    user_agent_hash : char(64)
+    ip_hash : char(64)
+    country_code : char(2)
+    index(link_id, occurred_at)
+    index(occurred_at)
+    partition by range(occurred_at)
+  }
+
+  entity DAT_LINK_STATS_DAILY {
+    * link_id : uuid <<FK DAT_SHORT_LINKS.id>>
+    * stat_date : date
+    --
+    click_count : bigint <<NOT NULL>>
+    unique_visitors : bigint <<NOT NULL>>
+    last_click_at : timestamptz
+    updated_at : timestamptz <<NOT NULL>>
+    PK(link_id, stat_date)
+    index(stat_date)
+  }
+}
+
+DAT_USERS ||--o{ DAT_USER_OAUTH_ACCOUNTS
+DAT_USERS ||--o{ DAT_SHORT_LINKS
+DAT_API_CLIENTS ||--o{ DAT_SHORT_LINKS
+DAT_SHORT_CODE_REGISTRY ||--o| DAT_SHORT_LINKS
+DAT_SHORT_LINKS ||--o{ DAT_LINK_REDIRECT_EVENTS
+DAT_SHORT_LINKS ||--o{ DAT_LINK_STATS_DAILY
+
+note bottom of DAT_RATE_LIMIT_STATE
+  Для прототипа хранение в PostgreSQL допустимо
+  В production обычно выносится в Redis
+end note
+
+note bottom of DAT_LINK_REDIRECT_EVENTS
+  Рекомендуется партиционирование по дате
+  для контроля роста таблицы и быстрых выборок
+end note
+
+@enduml
+
